@@ -1,0 +1,350 @@
+{
+  "name": "ETL AI AUTOMATION_STUDENTS_FILTER",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "File Upload",
+        "formDescription": "Upload the Student data",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "File Upload",
+              "fieldType": "file"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -1408,
+        0
+      ],
+      "id": "00fc8d8d-6bc6-4eea-a8a8-d7cf82f11c25",
+      "name": "CSV Upload",
+      "webhookId": "c3e2f245-1f27-4adc-b6c4-2fd127f3992e"
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "File_Upload",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.2,
+      "position": [
+        -752,
+        -16
+      ],
+      "id": "f6126b79-60b5-47d4-95d5-4d400eea6310",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Clean this student enrollment row and return ONLY a JSON object.\n\nRow data: {{ JSON.stringify($json) }}\n\nRules:\n- Name: Title Case (Manoj K)\n- Email: if invalid set INVALID_EMAIL\n- Phone: if less than 10 digits set MISSING\n- Course: only Python or Machine Learning or Data Science\n- Fee_Paid: yes/YES = true, no/NO = false\n- City: Title Case, empty = UNKNOWN\n- Enrolled_Date: convert to YYYY-MM-DD\n\nReturn ONLY raw JSON. No explanation. No markdown.",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": []
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -512,
+        -16
+      ],
+      "id": "2f43d367-6c96-4f36-a555-498264de8a00",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -512,
+        352
+      ],
+      "id": "ee458fb8-3530-4f9e-829a-a55ac9a4724e",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "BBp9BDGeGe6RIsTC",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst inputItems = $input.all();\nconst outputItems = [];\n\n// Get the response from a typical n8n AI node.\nfunction getPayload(item) {\n    const data = item.json ?? {};\n\n    if (data && typeof data === \"object\" && !Array.isArray(data)) {\n        for (const key of [\"output\", \"text\", \"response\", \"content\", \"result\"]) {\n            if (data[key] !== undefined && data[key] !== null) {\n                return data[key];\n            }\n        }\n\n        if (\n            data.message &&\n            typeof data.message === \"object\" &&\n            data.message.content !== undefined\n        ) {\n            return data.message.content;\n        }\n    }\n\n    // Also supports records already parsed as JSON.\n    return data;\n}\n\n// Extract JSON objects or arrays from text containing extra content.\nfunction extractJSONChunks(text) {\n    const chunks = [];\n    let start = -1;\n    let depth = 0;\n    let inString = false;\n    let escaped = false;\n\n    for (let i = 0; i < text.length; i++) {\n        const ch = text[i];\n\n        if (start === -1) {\n            if (ch === \"{\" || ch === \"[\") {\n                start = i;\n                depth = 1;\n                inString = false;\n                escaped = false;\n            }\n            continue;\n        }\n\n        if (inString) {\n            if (escaped) {\n                escaped = false;\n            } else if (ch === \"\\\\\") {\n                escaped = true;\n            } else if (ch === '\"') {\n                inString = false;\n            }\n            continue;\n        }\n\n        if (ch === '\"') {\n            inString = true;\n        } else if (ch === \"{\" || ch === \"[\") {\n            depth++;\n        } else if (ch === \"}\" || ch === \"]\") {\n            depth--;\n\n            if (depth === 0) {\n                chunks.push(text.slice(start, i + 1));\n                start = -1;\n            }\n        }\n    }\n\n    return chunks;\n}\n\n// Parse regular JSON, escaped JSON strings, arrays,\n// fenced JSON, or multiple concatenated JSON objects.\nfunction parsePayload(payload) {\n    if (payload === undefined || payload === null) {\n        throw new Error(\"AI output is empty.\");\n    }\n\n    if (typeof payload !== \"string\") {\n        return payload;\n    }\n\n    let text = payload.trim();\n\n    text = text\n        .replace(/^```(?:json)?\\s*/i, \"\")\n        .replace(/\\s*```$/i, \"\")\n        .trim();\n\n    for (let attempt = 0; attempt < 4; attempt++) {\n        try {\n            const parsed = JSON.parse(text);\n\n            // Sometimes the AI returns JSON encoded as a string.\n            if (typeof parsed === \"string\") {\n                text = parsed.trim();\n                continue;\n            }\n\n            return parsed;\n        } catch (error) {\n            const chunks = extractJSONChunks(text);\n\n            if (chunks.length > 0) {\n                const parsedChunks = chunks.map(chunk =>\n                    JSON.parse(chunk)\n                );\n\n                return parsedChunks.length === 1\n                    ? parsedChunks[0]\n                    : parsedChunks;\n            }\n\n            throw new Error(\n                \"Unable to parse AI output as JSON. Check the input format.\"\n            );\n        }\n    }\n\n    throw new Error(\"Too many nested JSON string layers.\");\n}\n\n// Convert arrays and common wrapper structures into records.\nfunction toRecords(value) {\n    if (Array.isArray(value)) {\n        return value.flatMap(toRecords);\n    }\n\n    if (typeof value === \"string\") {\n        return toRecords(parsePayload(value));\n    }\n\n    if (!value || typeof value !== \"object\") {\n        return [];\n    }\n\n    for (const key of [\"students\", \"records\", \"items\", \"results\", \"data\"]) {\n        if (Array.isArray(value[key])) {\n            return value[key].flatMap(toRecords);\n        }\n    }\n\n    // Handle wrappers such as { output: \"{...}\" }.\n    if (value.output !== undefined &&\n        value.Student_ID === undefined &&\n        value.student_id === undefined) {\n        return toRecords(value.output);\n    }\n\n    return [value];\n}\n\n// Read fields without depending on capitalization.\nfunction getField(record, aliases) {\n    const keys = Object.keys(record);\n\n    for (const alias of aliases) {\n        const actualKey = keys.find(\n            key => key.toLowerCase() === alias.toLowerCase()\n        );\n\n        if (actualKey !== undefined) {\n            return record[actualKey];\n        }\n    }\n\n    return undefined;\n}\n\nfunction cleanText(value) {\n    return value === undefined || value === null\n        ? \"\"\n        : String(value).trim();\n}\n\nfunction parseBoolean(value) {\n    if (typeof value === \"boolean\") {\n        return value;\n    }\n\n    const normalized = cleanText(value).toLowerCase();\n\n    if ([\"true\", \"yes\", \"y\", \"1\", \"paid\"].includes(normalized)) {\n        return true;\n    }\n\n    if ([\"false\", \"no\", \"n\", \"0\", \"unpaid\"].includes(normalized)) {\n        return false;\n    }\n\n    return null;\n}\n\nfunction isValidISODate(value) {\n    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) {\n        return false;\n    }\n\n    const date = new Date(`${value}T00:00:00Z`);\n\n    return (\n        !Number.isNaN(date.getTime()) &&\n        date.toISOString().slice(0, 10) === value\n    );\n}\n\n// Clean and validate one student record.\nfunction cleanStudent(record) {\n    const studentID = cleanText(\n        getField(record, [\"Student_ID\", \"StudentID\", \"ID\"])\n    );\n\n    const name = cleanText(getField(record, [\"Name\", \"Student_Name\"]));\n\n    const emailOriginal = cleanText(\n        getField(record, [\"Email\", \"Email_Address\"])\n    );\n\n    const emailValid =\n        /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(emailOriginal);\n\n    const email = emailValid ? emailOriginal.toLowerCase() : null;\n\n    const phoneOriginal = cleanText(\n        getField(record, [\"Phone\", \"Mobile\", \"Phone_Number\"])\n    );\n\n    // Remove spaces and punctuation; also accept an Indian +91 prefix.\n    let phoneDigits = phoneOriginal.replace(/\\D/g, \"\");\n\n    if (phoneDigits.length === 12 && phoneDigits.startsWith(\"91\")) {\n        phoneDigits = phoneDigits.slice(2);\n    }\n\n    const phoneValid = /^\\d{10}$/.test(phoneDigits);\n\n    const course = cleanText(getField(record, [\"Course\"]));\n    const city = cleanText(getField(record, [\"City\"]));\n\n    const feePaid = parseBoolean(\n        getField(record, [\"Fee_Paid\", \"FeePaid\"])\n    );\n\n    const enrolledDateOriginal = cleanText(\n        getField(record, [\"Enrolled_Date\", \"Enrollment_Date\"])\n    );\n\n    const dateValid = isValidISODate(enrolledDateOriginal);\n\n    const errors = [];\n\n    if (!studentID) errors.push(\"Student_ID is missing\");\n    if (!name) errors.push(\"Name is missing\");\n\n    if (!emailValid) {\n        errors.push(\n            emailOriginal ? \"Email is invalid\" : \"Email is missing\"\n        );\n    }\n\n    if (!phoneValid) {\n        errors.push(\n            phoneOriginal ? \"Phone must contain 10 digits\" : \"Phone is missing\"\n        );\n    }\n\n    if (!course) errors.push(\"Course is missing\");\n    if (!city) errors.push(\"City is missing\");\n\n    if (feePaid === null) {\n        errors.push(\"Fee_Paid is missing or invalid\");\n    }\n\n    if (!dateValid) {\n        errors.push(\"Enrolled_Date must be a valid YYYY-MM-DD date\");\n    }\n\n    return {\n        Student_ID: studentID || null,\n        Name: name || null,\n\n        // Invalid emails are not silently replaced with invented addresses.\n        Email: email,\n        Email_Original: emailOriginal || null,\n        Email_Valid: emailValid,\n\n        Phone: phoneValid ? phoneDigits : null,\n        Phone_Original: phoneOriginal || null,\n        Phone_Valid: phoneValid,\n\n        Course: course || null,\n        Fee_Paid: feePaid,\n        City: city || null,\n\n        Enrolled_Date: dateValid ? enrolledDateOriginal : null,\n        Enrolled_Date_Valid: dateValid,\n\n        Needs_Review: errors.length > 0,\n        Validation_Errors: errors\n    };\n}\n\n// Process every incoming n8n item.\nfor (let i = 0; i < inputItems.length; i++) {\n    const raw = getPayload(inputItems[i]);\n\n    try {\n        const parsed = parsePayload(raw);\n        const records = toRecords(parsed);\n\n        if (records.length === 0) {\n            throw new Error(\"No student records were found.\");\n        }\n\n        for (const record of records) {\n            if (\n                !record ||\n                typeof record !== \"object\" ||\n                Array.isArray(record)\n            ) {\n                outputItems.push({\n                    json: {\n                        _parseError: true,\n                        Source_Item: i,\n                        Error: \"Expected a student JSON object.\",\n                        Raw_Record: record\n                    }\n                });\n                continue;\n            }\n\n            outputItems.push({\n                json: cleanStudent(record)\n            });\n        }\n    } catch (error) {\n        outputItems.push({\n            json: {\n                _parseError: true,\n                Source_Item: i,\n                Error: error.message,\n                Raw_Output: typeof raw === \"string\"\n                    ? raw\n                    : JSON.stringify(raw)\n            }\n        });\n    }\n}\n\nreturn outputItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        224
+      ],
+      "id": "b42b2cf2-096e-4af4-89f7-b05b0bac42b1",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "22e596d4-84ce-4a2d-a485-7fdc1619b319",
+              "leftValue": "={{ $json.Fee_Paid }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "9d9f7ecf-71ac-4d38-916b-cfbcadeb57f3",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        256,
+        -32
+      ],
+      "id": "d0b9ad81-78ff-40cf-8ed6-751a266ecded",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "paid_student_details"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        592,
+        -48
+      ],
+      "id": "ceac6c65-2a13-4e07-b27f-75d2659a34ff",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -16,
+        -16
+      ],
+      "id": "7e0439a9-7298-4971-86ae-182ea75e08a6",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json['File Upload'] }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "array",
+                      "operation": "notEmpty",
+                      "singleValue": true
+                    },
+                    "id": "60ba2cd6-1e7a-48aa-860a-16210b1e6a10"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "5364a0d3-0be2-4df0-a52a-3c4f77e07aa3",
+                    "leftValue": "={{ $json['File Upload'] }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "array",
+                      "operation": "empty",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.5,
+      "position": [
+        -1072,
+        0
+      ],
+      "id": "581fe430-9544-41c1-93a5-0a4bcb636c38",
+      "name": "Switch"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "CSV Upload": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "99fe60cd-03ab-4265-98b6-7bdfb50abdc8",
+  "meta": {
+    "instanceId": "178203927dbe4a8102cbe172ba4aa8db767f45a56df8cce7c20ce1c6bd0d6e79"
+  },
+  "nodeGroups": [],
+  "id": "0vIx5aZTQqQ3lSEn",
+  "tags": []
+}
